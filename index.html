@@ -155,7 +155,7 @@
         alphaMask[p] = removableBackground[p] ? 0 : 1;
       }
 
-      const outlineMask = buildOutlineMask(alphaMask, w, h, outlinePx);
+      const outlineAlpha = buildOutlineAlpha(alphaMask, w, h, outlinePx);
       const result = new Uint8ClampedArray(data.length);
 
       for (let y = 0; y < h; y++) {
@@ -168,11 +168,11 @@
             result[i + 1] = data[i + 1];
             result[i + 2] = data[i + 2];
             result[i + 3] = 255;
-          } else if (outlineMask[p]) {
+          } else if (outlineAlpha[p] > 0) {
             result[i] = 255;
             result[i + 1] = 255;
             result[i + 2] = 255;
-            result[i + 3] = 255;
+            result[i + 3] = outlineAlpha[p];
           }
         }
       }
@@ -237,29 +237,31 @@
       };
     }
 
-    function buildOutlineMask(mask, w, h, radius) {
-      if (radius <= 0) return new Uint8Array(mask.length);
+    function buildOutlineAlpha(mask, w, h, radius) {
       const out = new Uint8Array(mask.length);
-      const r2 = radius * radius;
+      if (radius <= 0) return out;
 
       for (let y = 0; y < h; y++) {
         for (let x = 0; x < w; x++) {
           const p = y * w + x;
           if (mask[p]) continue;
 
-          let hit = 0;
-          for (let dy = -radius; dy <= radius && !hit; dy++) {
+          let minDist2 = Infinity;
+          for (let dy = -radius; dy <= radius; dy++) {
             for (let dx = -radius; dx <= radius; dx++) {
-              if (dx * dx + dy * dy > r2) continue;
+              const dist2 = dx * dx + dy * dy;
+              if (dist2 > radius * radius) continue;
               const nx = x + dx, ny = y + dy;
               if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
-              if (mask[ny * w + nx]) {
-                hit = 1;
-                break;
-              }
+              if (mask[ny * w + nx] && dist2 < minDist2) minDist2 = dist2;
             }
           }
-          out[p] = hit;
+
+          if (minDist2 !== Infinity) {
+            const dist = Math.sqrt(minDist2);
+            const t = 1 - dist / radius;
+            out[p] = Math.max(0, Math.min(255, Math.round(255 * t)));
+          }
         }
       }
       return out;
