@@ -1,387 +1,393 @@
-<!doctype html>
-<html lang="ja">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>透過 + 白フチジェネレーター</title>
-  <style>
-    :root { color-scheme: light dark; }
-    body {
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, "Hiragino Kaku Gothic ProN", Meiryo, sans-serif;
-      margin: 0;
-      padding: 20px;
-      line-height: 1.5;
-      background: #111;
-      color: #f1f1f1;
-    }
-    .wrap { max-width: 960px; margin: 0 auto; }
-    .card {
-      background: #1b1b1b;
-      border: 1px solid #333;
-      border-radius: 12px;
-      padding: 16px;
-      margin-bottom: 16px;
-    }
-    .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
-    input[type="number"] { width: 90px; }
-    button, input, label { font: inherit; }
-    .preview {
-      background-image:
-        linear-gradient(45deg, #2f2f2f 25%, transparent 25%),
-        linear-gradient(-45deg, #2f2f2f 25%, transparent 25%),
-        linear-gradient(45deg, transparent 75%, #2f2f2f 75%),
-        linear-gradient(-45deg, transparent 75%, #2f2f2f 75%);
-      background-size: 24px 24px;
-      background-position: 0 0, 0 12px, 12px -12px, -12px 0;
-      min-height: 320px;
-      display: grid;
-      place-items: center;
-      border-radius: 10px;
-      border: 1px dashed #555;
-      overflow: auto;
-      padding: 12px;
-    }
-    canvas { max-width: 100%; height: auto; }
-    .hint { opacity: 0.8; font-size: 0.92rem; }
-  </style>
-</head>
-<body>
-  <div class="wrap">
-    <h1>画像を透過して白い細フチを追加</h1>
-    <p class="hint">背景色に近い色でも、画像の外周からつながっていない領域（例: 白目）は残すようにしています。</p>
-
-    <div class="card">
-      <div class="row">
-        <label>画像:
-          <input id="fileInput" type="file" accept="image/*" />
-        </label>
-        <label>透過しきい値(0-255):
-          <input id="threshold" type="number" min="0" max="255" value="40" />
-        </label>
-        <label>白フチ(px):
-          <input id="outlinePx" type="number" min="0" max="64" value="3" />
-        </label>
-        <button id="processBtn" disabled>処理する</button>
-        <button id="paintWhiteBtn" disabled>白塗りモード: OFF</button>
-        <button id="downloadBtn" disabled>PNGを保存</button>
-      </div>
-    </div>
-
-    <div class="card">
-      <h2>プレビュー</h2>
-      <div class="preview"><canvas id="canvas"></canvas></div>
-    </div>
-  </div>
-
-  <script>
-    const fileInput = document.getElementById('fileInput');
-    const thresholdInput = document.getElementById('threshold');
-    const outlineInput = document.getElementById('outlinePx');
-    const processBtn = document.getElementById('processBtn');
-    const paintWhiteBtn = document.getElementById('paintWhiteBtn');
-    const downloadBtn = document.getElementById('downloadBtn');
-    const canvas = document.getElementById('canvas');
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-
-    let sourceImage = null;
-    let isPaintWhiteMode = false;
-
-    fileInput.addEventListener('change', async (e) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-      sourceImage = await loadImage(file);
-      processBtn.disabled = false;
-      paintWhiteBtn.disabled = false;
-      renderOriginal();
-    });
-
-    processBtn.addEventListener('click', processImage);
-
-    paintWhiteBtn.addEventListener('click', () => {
-      isPaintWhiteMode = !isPaintWhiteMode;
-      paintWhiteBtn.textContent = `白塗りモード: ${isPaintWhiteMode ? 'ON' : 'OFF'}`;
-      canvas.style.cursor = isPaintWhiteMode ? 'crosshair' : 'default';
-    });
-
-    canvas.addEventListener('click', (e) => {
-      if (!isPaintWhiteMode) return;
-      if (!canvas.width || !canvas.height) return;
-
-      const rect = canvas.getBoundingClientRect();
-      const scaleX = canvas.width / rect.width;
-      const scaleY = canvas.height / rect.height;
-      const x = Math.floor((e.clientX - rect.left) * scaleX);
-      const y = Math.floor((e.clientY - rect.top) * scaleY);
-      floodFillWhite(x, y);
-      downloadBtn.disabled = false;
-    });
-
-    downloadBtn.addEventListener('click', () => {
-      const a = document.createElement('a');
-      a.download = 'outlined.png';
-      a.href = canvas.toDataURL('image/png');
-      a.click();
-    });
-
-    function loadImage(file) {
-      return new Promise((resolve, reject) => {
-        const url = URL.createObjectURL(file);
-        const img = new Image();
-        img.onload = () => {
-          URL.revokeObjectURL(url);
-          resolve(img);
-        };
-        img.onerror = reject;
-        img.src = url;
-      });
-    }
-
-    function renderOriginal() {
-      if (!sourceImage) return;
-      canvas.width = sourceImage.naturalWidth;
-      canvas.height = sourceImage.naturalHeight;
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(sourceImage, 0, 0);
-      downloadBtn.disabled = true;
-    }
-
-    function processImage() {
-      if (!sourceImage) return;
-
-      const w = sourceImage.naturalWidth;
-      const h = sourceImage.naturalHeight;
-      canvas.width = w;
-      canvas.height = h;
-      ctx.clearRect(0, 0, w, h);
-      ctx.drawImage(sourceImage, 0, 0);
-
-      const img = ctx.getImageData(0, 0, w, h);
-      const data = img.data;
-
-      const threshold = clampNumber(Number(thresholdInput.value), 0, 255);
-      const outlinePx = clampNumber(Number(outlineInput.value), 0, 64);
-
-      const bg = estimateBackgroundColor(data, w, h);
-      const backgroundCandidate = new Uint8Array(w * h);
-
-      for (let i = 0, p = 0; i < data.length; i += 4, p++) {
-        const dr = data[i] - bg.r;
-        const dg = data[i + 1] - bg.g;
-        const db = data[i + 2] - bg.b;
-        const dist = Math.sqrt(dr * dr + dg * dg + db * db);
-        backgroundCandidate[p] = dist <= threshold ? 1 : 0;
-      }
-
-      // 外周とつながっている「背景候補」だけを透過する（白目など内部の白は残す）
-      const removableBackground = collectEdgeConnected(backgroundCandidate, w, h);
-      const alphaMask = new Uint8Array(w * h);
-      for (let p = 0; p < alphaMask.length; p++) {
-        alphaMask[p] = removableBackground[p] ? 0 : 1;
-      }
-
-      const smoothedMask = smoothMask(alphaMask, w, h, 1);
-      const outlineMask = buildOutlineMask(smoothedMask, w, h, outlinePx);
-      const result = new Uint8ClampedArray(data.length);
-
-      for (let y = 0; y < h; y++) {
-        for (let x = 0; x < w; x++) {
-          const p = y * w + x;
-          const i = p * 4;
-
-          if (alphaMask[p]) {
-            result[i] = data[i];
-            result[i + 1] = data[i + 1];
-            result[i + 2] = data[i + 2];
-            result[i + 3] = 255;
-          } else if (outlineMask[p]) {
-            result[i] = 255;
-            result[i + 1] = 255;
-            result[i + 2] = 255;
-            result[i + 3] = 255;
-          }
-        }
-      }
-
-      ctx.putImageData(new ImageData(result, w, h), 0, 0);
-      downloadBtn.disabled = false;
-    }
-
-
-    function collectEdgeConnected(candidate, w, h) {
-      const connected = new Uint8Array(candidate.length);
-      const queue = new Int32Array(candidate.length);
-      let head = 0;
-      let tail = 0;
-
-      function pushIfCandidate(x, y) {
-        const p = y * w + x;
-        if (!candidate[p] || connected[p]) return;
-        connected[p] = 1;
-        queue[tail++] = p;
-      }
-
-      for (let x = 0; x < w; x++) {
-        pushIfCandidate(x, 0);
-        pushIfCandidate(x, h - 1);
-      }
-      for (let y = 1; y < h - 1; y++) {
-        pushIfCandidate(0, y);
-        pushIfCandidate(w - 1, y);
-      }
-
-      while (head < tail) {
-        const p = queue[head++];
-        const x = p % w;
-        const y = (p - x) / w;
-
-        if (x > 0) pushIfCandidate(x - 1, y);
-        if (x + 1 < w) pushIfCandidate(x + 1, y);
-        if (y > 0) pushIfCandidate(x, y - 1);
-        if (y + 1 < h) pushIfCandidate(x, y + 1);
-      }
-
-      return connected;
-    }
-
-    function estimateBackgroundColor(data, w, h) {
-      const points = [
-        [0, 0],
-        [w - 1, 0],
-        [0, h - 1],
-        [w - 1, h - 1],
-      ];
-      let r = 0, g = 0, b = 0;
-      for (const [x, y] of points) {
-        const i = (y * w + x) * 4;
-        r += data[i]; g += data[i + 1]; b += data[i + 2];
-      }
-      return {
-        r: Math.round(r / points.length),
-        g: Math.round(g / points.length),
-        b: Math.round(b / points.length),
-      };
-    }
-
-    function buildOutlineMask(mask, w, h, radius) {
-      const out = new Uint8Array(mask.length);
-      if (radius <= 0) return out;
-      const r2 = radius * radius;
-
-      for (let y = 0; y < h; y++) {
-        for (let x = 0; x < w; x++) {
-          const p = y * w + x;
-          if (mask[p]) continue;
-
-          let hit = 0;
-          for (let dy = -radius; dy <= radius && !hit; dy++) {
-            for (let dx = -radius; dx <= radius; dx++) {
-              const dist2 = dx * dx + dy * dy;
-              if (dist2 > r2) continue;
-              const nx = x + dx, ny = y + dy;
-              if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
-              if (mask[ny * w + nx]) {
-                hit = 1;
-                break;
-              }
-            }
-          }
-          out[p] = hit;
-        }
-      }
-      return out;
-    }
-
-    function smoothMask(mask, w, h, passes) {
-      let src = mask;
-      let dst = new Uint8Array(mask.length);
-
-      for (let pass = 0; pass < passes; pass++) {
-        for (let y = 0; y < h; y++) {
-          for (let x = 0; x < w; x++) {
-            let sum = 0;
-            let count = 0;
-            for (let dy = -1; dy <= 1; dy++) {
-              for (let dx = -1; dx <= 1; dx++) {
-                const nx = x + dx;
-                const ny = y + dy;
-                if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
-                sum += src[ny * w + nx];
-                count++;
-              }
-            }
-            dst[y * w + x] = sum >= Math.ceil(count * 0.5) ? 1 : 0;
-          }
-        }
-        src = dst;
-        dst = new Uint8Array(mask.length);
-      }
-      return src;
-    }
-
-
-    function floodFillWhite(startX, startY) {
-      const w = canvas.width;
-      const h = canvas.height;
-      if (startX < 0 || startY < 0 || startX >= w || startY >= h) return;
-
-      const img = ctx.getImageData(0, 0, w, h);
-      const data = img.data;
-      const start = (startY * w + startX) * 4;
-      const sr = data[start], sg = data[start + 1], sb = data[start + 2], sa = data[start + 3];
-
-      // 既に完全白なら処理不要
-      if (sr === 255 && sg === 255 && sb === 255 && sa === 255) return;
-
-      const q = new Int32Array(w * h);
-      const seen = new Uint8Array(w * h);
-      let head = 0, tail = 0;
-      q[tail++] = startY * w + startX;
-      seen[startY * w + startX] = 1;
-
-      // クリック位置と同じ色(厳密一致)の連結領域だけを白化する
-      const tolerance = 0;
-      while (head < tail) {
-        const p = q[head++];
-        const x = p % w;
-        const y = (p - x) / w;
-        const i = p * 4;
-
-        const dr = data[i] - sr;
-        const dg = data[i + 1] - sg;
-        const db = data[i + 2] - sb;
-        const da = data[i + 3] - sa;
-        if (Math.abs(dr) > tolerance || Math.abs(dg) > tolerance || Math.abs(db) > tolerance || Math.abs(da) > tolerance) continue;
-
-        data[i] = 255;
-        data[i + 1] = 255;
-        data[i + 2] = 255;
-        data[i + 3] = 255;
-
-        if (x > 0) {
-          const np = p - 1;
-          if (!seen[np]) { seen[np] = 1; q[tail++] = np; }
-        }
-        if (x + 1 < w) {
-          const np = p + 1;
-          if (!seen[np]) { seen[np] = 1; q[tail++] = np; }
-        }
-        if (y > 0) {
-          const np = p - w;
-          if (!seen[np]) { seen[np] = 1; q[tail++] = np; }
-        }
-        if (y + 1 < h) {
-          const np = p + w;
-          if (!seen[np]) { seen[np] = 1; q[tail++] = np; }
-        }
-      }
-
-      ctx.putImageData(img, 0, 0);
-    }
-
-    function clampNumber(n, min, max) {
-      if (!Number.isFinite(n)) return min;
-      return Math.min(max, Math.max(min, Math.round(n)));
-    }
-  </script>
-</body>
-</html>
+diff --git a/index.html b/index.html
+new file mode 100644
+index 0000000000000000000000000000000000000000..1a7b36601dc7628a13d524aa6d6fca55a088fd10
+--- /dev/null
++++ b/index.html
+@@ -0,0 +1,387 @@
++<!doctype html>
++<html lang="ja">
++<head>
++  <meta charset="UTF-8" />
++  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
++  <title>透過 + 白フチジェネレーター</title>
++  <style>
++    :root { color-scheme: light dark; }
++    body {
++      font-family: system-ui, -apple-system, Segoe UI, Roboto, "Hiragino Kaku Gothic ProN", Meiryo, sans-serif;
++      margin: 0;
++      padding: 20px;
++      line-height: 1.5;
++      background: #111;
++      color: #f1f1f1;
++    }
++    .wrap { max-width: 960px; margin: 0 auto; }
++    .card {
++      background: #1b1b1b;
++      border: 1px solid #333;
++      border-radius: 12px;
++      padding: 16px;
++      margin-bottom: 16px;
++    }
++    .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
++    input[type="number"] { width: 90px; }
++    button, input, label { font: inherit; }
++    .preview {
++      background-image:
++        linear-gradient(45deg, #2f2f2f 25%, transparent 25%),
++        linear-gradient(-45deg, #2f2f2f 25%, transparent 25%),
++        linear-gradient(45deg, transparent 75%, #2f2f2f 75%),
++        linear-gradient(-45deg, transparent 75%, #2f2f2f 75%);
++      background-size: 24px 24px;
++      background-position: 0 0, 0 12px, 12px -12px, -12px 0;
++      min-height: 320px;
++      display: grid;
++      place-items: center;
++      border-radius: 10px;
++      border: 1px dashed #555;
++      overflow: auto;
++      padding: 12px;
++    }
++    canvas { max-width: 100%; height: auto; }
++    .hint { opacity: 0.8; font-size: 0.92rem; }
++  </style>
++</head>
++<body>
++  <div class="wrap">
++    <h1>画像を透過して白い細フチを追加</h1>
++    <p class="hint">背景色に近い色でも、画像の外周からつながっていない領域（例: 白目）は残すようにしています。</p>
++
++    <div class="card">
++      <div class="row">
++        <label>画像:
++          <input id="fileInput" type="file" accept="image/*" />
++        </label>
++        <label>透過しきい値(0-255):
++          <input id="threshold" type="number" min="0" max="255" value="40" />
++        </label>
++        <label>白フチ(px):
++          <input id="outlinePx" type="number" min="0" max="64" value="3" />
++        </label>
++        <button id="processBtn" disabled>処理する</button>
++        <button id="paintWhiteBtn" disabled>白塗りモード: OFF</button>
++        <button id="downloadBtn" disabled>PNGを保存</button>
++      </div>
++    </div>
++
++    <div class="card">
++      <h2>プレビュー</h2>
++      <div class="preview"><canvas id="canvas"></canvas></div>
++    </div>
++  </div>
++
++  <script>
++    const fileInput = document.getElementById('fileInput');
++    const thresholdInput = document.getElementById('threshold');
++    const outlineInput = document.getElementById('outlinePx');
++    const processBtn = document.getElementById('processBtn');
++    const paintWhiteBtn = document.getElementById('paintWhiteBtn');
++    const downloadBtn = document.getElementById('downloadBtn');
++    const canvas = document.getElementById('canvas');
++    const ctx = canvas.getContext('2d', { willReadFrequently: true });
++
++    let sourceImage = null;
++    let isPaintWhiteMode = false;
++
++    fileInput.addEventListener('change', async (e) => {
++      const file = e.target.files?.[0];
++      if (!file) return;
++      sourceImage = await loadImage(file);
++      processBtn.disabled = false;
++      paintWhiteBtn.disabled = false;
++      renderOriginal();
++    });
++
++    processBtn.addEventListener('click', processImage);
++
++    paintWhiteBtn.addEventListener('click', () => {
++      isPaintWhiteMode = !isPaintWhiteMode;
++      paintWhiteBtn.textContent = `白塗りモード: ${isPaintWhiteMode ? 'ON' : 'OFF'}`;
++      canvas.style.cursor = isPaintWhiteMode ? 'crosshair' : 'default';
++    });
++
++    canvas.addEventListener('click', (e) => {
++      if (!isPaintWhiteMode) return;
++      if (!canvas.width || !canvas.height) return;
++
++      const rect = canvas.getBoundingClientRect();
++      const scaleX = canvas.width / rect.width;
++      const scaleY = canvas.height / rect.height;
++      const x = Math.floor((e.clientX - rect.left) * scaleX);
++      const y = Math.floor((e.clientY - rect.top) * scaleY);
++      floodFillWhite(x, y);
++      downloadBtn.disabled = false;
++    });
++
++    downloadBtn.addEventListener('click', () => {
++      const a = document.createElement('a');
++      a.download = 'outlined.png';
++      a.href = canvas.toDataURL('image/png');
++      a.click();
++    });
++
++    function loadImage(file) {
++      return new Promise((resolve, reject) => {
++        const url = URL.createObjectURL(file);
++        const img = new Image();
++        img.onload = () => {
++          URL.revokeObjectURL(url);
++          resolve(img);
++        };
++        img.onerror = reject;
++        img.src = url;
++      });
++    }
++
++    function renderOriginal() {
++      if (!sourceImage) return;
++      canvas.width = sourceImage.naturalWidth;
++      canvas.height = sourceImage.naturalHeight;
++      ctx.clearRect(0, 0, canvas.width, canvas.height);
++      ctx.drawImage(sourceImage, 0, 0);
++      downloadBtn.disabled = true;
++    }
++
++    function processImage() {
++      if (!sourceImage) return;
++
++      const w = sourceImage.naturalWidth;
++      const h = sourceImage.naturalHeight;
++      canvas.width = w;
++      canvas.height = h;
++      ctx.clearRect(0, 0, w, h);
++      ctx.drawImage(sourceImage, 0, 0);
++
++      const img = ctx.getImageData(0, 0, w, h);
++      const data = img.data;
++
++      const threshold = clampNumber(Number(thresholdInput.value), 0, 255);
++      const outlinePx = clampNumber(Number(outlineInput.value), 0, 64);
++
++      const bg = estimateBackgroundColor(data, w, h);
++      const backgroundCandidate = new Uint8Array(w * h);
++
++      for (let i = 0, p = 0; i < data.length; i += 4, p++) {
++        const dr = data[i] - bg.r;
++        const dg = data[i + 1] - bg.g;
++        const db = data[i + 2] - bg.b;
++        const dist = Math.sqrt(dr * dr + dg * dg + db * db);
++        backgroundCandidate[p] = dist <= threshold ? 1 : 0;
++      }
++
++      // 外周とつながっている「背景候補」だけを透過する（白目など内部の白は残す）
++      const removableBackground = collectEdgeConnected(backgroundCandidate, w, h);
++      const alphaMask = new Uint8Array(w * h);
++      for (let p = 0; p < alphaMask.length; p++) {
++        alphaMask[p] = removableBackground[p] ? 0 : 1;
++      }
++
++      const smoothedMask = smoothMask(alphaMask, w, h, 1);
++      const outlineMask = buildOutlineMask(smoothedMask, w, h, outlinePx);
++      const result = new Uint8ClampedArray(data.length);
++
++      for (let y = 0; y < h; y++) {
++        for (let x = 0; x < w; x++) {
++          const p = y * w + x;
++          const i = p * 4;
++
++          if (alphaMask[p]) {
++            result[i] = data[i];
++            result[i + 1] = data[i + 1];
++            result[i + 2] = data[i + 2];
++            result[i + 3] = 255;
++          } else if (outlineMask[p]) {
++            result[i] = 255;
++            result[i + 1] = 255;
++            result[i + 2] = 255;
++            result[i + 3] = 255;
++          }
++        }
++      }
++
++      ctx.putImageData(new ImageData(result, w, h), 0, 0);
++      downloadBtn.disabled = false;
++    }
++
++
++    function collectEdgeConnected(candidate, w, h) {
++      const connected = new Uint8Array(candidate.length);
++      const queue = new Int32Array(candidate.length);
++      let head = 0;
++      let tail = 0;
++
++      function pushIfCandidate(x, y) {
++        const p = y * w + x;
++        if (!candidate[p] || connected[p]) return;
++        connected[p] = 1;
++        queue[tail++] = p;
++      }
++
++      for (let x = 0; x < w; x++) {
++        pushIfCandidate(x, 0);
++        pushIfCandidate(x, h - 1);
++      }
++      for (let y = 1; y < h - 1; y++) {
++        pushIfCandidate(0, y);
++        pushIfCandidate(w - 1, y);
++      }
++
++      while (head < tail) {
++        const p = queue[head++];
++        const x = p % w;
++        const y = (p - x) / w;
++
++        if (x > 0) pushIfCandidate(x - 1, y);
++        if (x + 1 < w) pushIfCandidate(x + 1, y);
++        if (y > 0) pushIfCandidate(x, y - 1);
++        if (y + 1 < h) pushIfCandidate(x, y + 1);
++      }
++
++      return connected;
++    }
++
++    function estimateBackgroundColor(data, w, h) {
++      const points = [
++        [0, 0],
++        [w - 1, 0],
++        [0, h - 1],
++        [w - 1, h - 1],
++      ];
++      let r = 0, g = 0, b = 0;
++      for (const [x, y] of points) {
++        const i = (y * w + x) * 4;
++        r += data[i]; g += data[i + 1]; b += data[i + 2];
++      }
++      return {
++        r: Math.round(r / points.length),
++        g: Math.round(g / points.length),
++        b: Math.round(b / points.length),
++      };
++    }
++
++    function buildOutlineMask(mask, w, h, radius) {
++      const out = new Uint8Array(mask.length);
++      if (radius <= 0) return out;
++      const r2 = radius * radius;
++
++      for (let y = 0; y < h; y++) {
++        for (let x = 0; x < w; x++) {
++          const p = y * w + x;
++          if (mask[p]) continue;
++
++          let hit = 0;
++          for (let dy = -radius; dy <= radius && !hit; dy++) {
++            for (let dx = -radius; dx <= radius; dx++) {
++              const dist2 = dx * dx + dy * dy;
++              if (dist2 > r2) continue;
++              const nx = x + dx, ny = y + dy;
++              if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
++              if (mask[ny * w + nx]) {
++                hit = 1;
++                break;
++              }
++            }
++          }
++          out[p] = hit;
++        }
++      }
++      return out;
++    }
++
++    function smoothMask(mask, w, h, passes) {
++      let src = mask;
++      let dst = new Uint8Array(mask.length);
++
++      for (let pass = 0; pass < passes; pass++) {
++        for (let y = 0; y < h; y++) {
++          for (let x = 0; x < w; x++) {
++            let sum = 0;
++            let count = 0;
++            for (let dy = -1; dy <= 1; dy++) {
++              for (let dx = -1; dx <= 1; dx++) {
++                const nx = x + dx;
++                const ny = y + dy;
++                if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
++                sum += src[ny * w + nx];
++                count++;
++              }
++            }
++            dst[y * w + x] = sum >= Math.ceil(count * 0.5) ? 1 : 0;
++          }
++        }
++        src = dst;
++        dst = new Uint8Array(mask.length);
++      }
++      return src;
++    }
++
++
++    function floodFillWhite(startX, startY) {
++      const w = canvas.width;
++      const h = canvas.height;
++      if (startX < 0 || startY < 0 || startX >= w || startY >= h) return;
++
++      const img = ctx.getImageData(0, 0, w, h);
++      const data = img.data;
++      const start = (startY * w + startX) * 4;
++      const sr = data[start], sg = data[start + 1], sb = data[start + 2], sa = data[start + 3];
++
++      // 既に完全白なら処理不要
++      if (sr === 255 && sg === 255 && sb === 255 && sa === 255) return;
++
++      const q = new Int32Array(w * h);
++      const seen = new Uint8Array(w * h);
++      let head = 0, tail = 0;
++      q[tail++] = startY * w + startX;
++      seen[startY * w + startX] = 1;
++
++      // 人間には同じに見える程度の近い色まで許容して連結領域を白化する
++      const tolerance = 12;
++      while (head < tail) {
++        const p = q[head++];
++        const x = p % w;
++        const y = (p - x) / w;
++        const i = p * 4;
++
++        const dr = data[i] - sr;
++        const dg = data[i + 1] - sg;
++        const db = data[i + 2] - sb;
++        const da = data[i + 3] - sa;
++        if (Math.abs(dr) > tolerance || Math.abs(dg) > tolerance || Math.abs(db) > tolerance || Math.abs(da) > tolerance) continue;
++
++        data[i] = 255;
++        data[i + 1] = 255;
++        data[i + 2] = 255;
++        data[i + 3] = 255;
++
++        if (x > 0) {
++          const np = p - 1;
++          if (!seen[np]) { seen[np] = 1; q[tail++] = np; }
++        }
++        if (x + 1 < w) {
++          const np = p + 1;
++          if (!seen[np]) { seen[np] = 1; q[tail++] = np; }
++        }
++        if (y > 0) {
++          const np = p - w;
++          if (!seen[np]) { seen[np] = 1; q[tail++] = np; }
++        }
++        if (y + 1 < h) {
++          const np = p + w;
++          if (!seen[np]) { seen[np] = 1; q[tail++] = np; }
++        }
++      }
++
++      ctx.putImageData(img, 0, 0);
++    }
++
++    function clampNumber(n, min, max) {
++      if (!Number.isFinite(n)) return min;
++      return Math.min(max, Math.max(min, Math.round(n)));
++    }
++  </script>
++</body>
++</html>
