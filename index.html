@@ -338,7 +338,8 @@
       q[tail++] = startY * w + startX;
       seen[startY * w + startX] = 1;
 
-      const tolerance = 28;
+      // クリック位置と同じ色(厳密一致)の連結領域だけを白化する
+      const tolerance = 0;
       while (head < tail) {
         const p = q[head++];
         const x = p % w;
@@ -349,7 +350,7 @@
         const dg = data[i + 1] - sg;
         const db = data[i + 2] - sb;
         const da = data[i + 3] - sa;
-        if (Math.sqrt(dr * dr + dg * dg + db * db + da * da) > tolerance) continue;
+        if (Math.abs(dr) > tolerance || Math.abs(dg) > tolerance || Math.abs(db) > tolerance || Math.abs(da) > tolerance) continue;
 
         data[i] = 255;
         data[i + 1] = 255;
