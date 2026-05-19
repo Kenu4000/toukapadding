@@ -48,7 +48,7 @@
 <body>
   <div class="wrap">
     <h1>画像を透過して白い細フチを追加</h1>
-    <p class="hint">背景色は「四隅の平均色」を基準に透過します。背景がほぼ単色の画像に向いています。</p>
+    <p class="hint">背景色に近い色でも、画像の外周からつながっていない領域（例: 白目）は残すようにしています。</p>
 
     <div class="card">
       <div class="row">
@@ -138,20 +138,21 @@
       const outlinePx = clampNumber(Number(outlineInput.value), 0, 64);
 
       const bg = estimateBackgroundColor(data, w, h);
-      const alphaMask = new Uint8Array(w * h);
+      const backgroundCandidate = new Uint8Array(w * h);
 
       for (let i = 0, p = 0; i < data.length; i += 4, p++) {
         const dr = data[i] - bg.r;
         const dg = data[i + 1] - bg.g;
         const db = data[i + 2] - bg.b;
         const dist = Math.sqrt(dr * dr + dg * dg + db * db);
+        backgroundCandidate[p] = dist <= threshold ? 1 : 0;
+      }
 
-        if (dist <= threshold) {
-          data[i + 3] = 0;
-          alphaMask[p] = 0;
-        } else {
-          alphaMask[p] = 1;
-        }
+      // 外周とつながっている「背景候補」だけを透過する（白目など内部の白は残す）
+      const removableBackground = collectEdgeConnected(backgroundCandidate, w, h);
+      const alphaMask = new Uint8Array(w * h);
+      for (let p = 0; p < alphaMask.length; p++) {
+        alphaMask[p] = removableBackground[p] ? 0 : 1;
       }
 
       const outlineMask = buildOutlineMask(alphaMask, w, h, outlinePx);
@@ -178,6 +179,43 @@
 
       ctx.putImageData(new ImageData(result, w, h), 0, 0);
       downloadBtn.disabled = false;
+    }
+
+
+    function collectEdgeConnected(candidate, w, h) {
+      const connected = new Uint8Array(candidate.length);
+      const queue = new Int32Array(candidate.length);
+      let head = 0;
+      let tail = 0;
+
+      function pushIfCandidate(x, y) {
+        const p = y * w + x;
+        if (!candidate[p] || connected[p]) return;
+        connected[p] = 1;
+        queue[tail++] = p;
+      }
+
+      for (let x = 0; x < w; x++) {
+        pushIfCandidate(x, 0);
+        pushIfCandidate(x, h - 1);
+      }
+      for (let y = 1; y < h - 1; y++) {
+        pushIfCandidate(0, y);
+        pushIfCandidate(w - 1, y);
+      }
+
+      while (head < tail) {
+        const p = queue[head++];
+        const x = p % w;
+        const y = (p - x) / w;
+
+        if (x > 0) pushIfCandidate(x - 1, y);
+        if (x + 1 < w) pushIfCandidate(x + 1, y);
+        if (y > 0) pushIfCandidate(x, y - 1);
+        if (y + 1 < h) pushIfCandidate(x, y + 1);
+      }
+
+      return connected;
     }
 
     function estimateBackgroundColor(data, w, h) {
