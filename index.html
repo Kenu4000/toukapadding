@@ -48,7 +48,7 @@
 <body>
   <div class="wrap">
     <h1>画像を透過して白い細フチを追加</h1>
-    <p class="hint">背景色に近い色でも、画像の外周からつながっていない領域（例: 白目）は残すようにしています。はい</p>
+    <p class="hint">背景色に近い色でも、画像の外周からつながっていない領域（例: 白目）は残すようにしています。</p>
 
     <div class="card">
       <div class="row">
@@ -155,7 +155,8 @@
         alphaMask[p] = removableBackground[p] ? 0 : 1;
       }
 
-      const outlineAlpha = buildOutlineAlpha(alphaMask, w, h, outlinePx);
+      const smoothedMask = smoothMask(alphaMask, w, h, 1);
+      const outlineMask = buildOutlineMask(smoothedMask, w, h, outlinePx);
       const result = new Uint8ClampedArray(data.length);
 
       for (let y = 0; y < h; y++) {
@@ -168,11 +169,11 @@
             result[i + 1] = data[i + 1];
             result[i + 2] = data[i + 2];
             result[i + 3] = 255;
-          } else if (outlineAlpha[p] > 0) {
+          } else if (outlineMask[p]) {
             result[i] = 255;
             result[i + 1] = 255;
             result[i + 2] = 255;
-            result[i + 3] = outlineAlpha[p];
+            result[i + 3] = 255;
           }
         }
       }
@@ -237,34 +238,60 @@
       };
     }
 
-    function buildOutlineAlpha(mask, w, h, radius) {
+    function buildOutlineMask(mask, w, h, radius) {
       const out = new Uint8Array(mask.length);
       if (radius <= 0) return out;
+      const r2 = radius * radius;
 
       for (let y = 0; y < h; y++) {
         for (let x = 0; x < w; x++) {
           const p = y * w + x;
           if (mask[p]) continue;
 
-          let minDist2 = Infinity;
-          for (let dy = -radius; dy <= radius; dy++) {
+          let hit = 0;
+          for (let dy = -radius; dy <= radius && !hit; dy++) {
             for (let dx = -radius; dx <= radius; dx++) {
               const dist2 = dx * dx + dy * dy;
-              if (dist2 > radius * radius) continue;
+              if (dist2 > r2) continue;
               const nx = x + dx, ny = y + dy;
               if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
-              if (mask[ny * w + nx] && dist2 < minDist2) minDist2 = dist2;
+              if (mask[ny * w + nx]) {
+                hit = 1;
+                break;
+              }
             }
           }
-
-          if (minDist2 !== Infinity) {
-            const dist = Math.sqrt(minDist2);
-            const t = 1 - dist / radius;
-            out[p] = Math.max(0, Math.min(255, Math.round(255 * t)));
-          }
+          out[p] = hit;
         }
       }
       return out;
+    }
+
+    function smoothMask(mask, w, h, passes) {
+      let src = mask;
+      let dst = new Uint8Array(mask.length);
+
+      for (let pass = 0; pass < passes; pass++) {
+        for (let y = 0; y < h; y++) {
+          for (let x = 0; x < w; x++) {
+            let sum = 0;
+            let count = 0;
+            for (let dy = -1; dy <= 1; dy++) {
+              for (let dx = -1; dx <= 1; dx++) {
+                const nx = x + dx;
+                const ny = y + dy;
+                if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+                sum += src[ny * w + nx];
+                count++;
+              }
+            }
+            dst[y * w + x] = sum >= Math.ceil(count * 0.5) ? 1 : 0;
+          }
+        }
+        src = dst;
+        dst = new Uint8Array(mask.length);
+      }
+      return src;
     }
 
     function clampNumber(n, min, max) {
